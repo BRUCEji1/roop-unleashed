@@ -7,6 +7,9 @@ import ssl
 import subprocess
 import sys
 import urllib
+import torch
+import gradio
+import tempfile
 
 from pathlib import Path
 from typing import List, Any
@@ -24,8 +27,9 @@ if platform.system().lower() == 'darwin':
 
 
 def run_ffmpeg(args: List[str]) -> bool:
-    commands = ['ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-loglevel', roop.globals.log_level]
+    commands = ['ffmpeg', '-hide_banner', '-hwaccel', 'auto', '-y', '-loglevel', roop.globals.log_level]
     commands.extend(args)
+    print (" ".join(commands))
     try:
         subprocess.check_output(commands, stderr=subprocess.STDOUT)
         return True
@@ -42,31 +46,53 @@ def detect_fps(target_path: str) -> float:
         return numerator / denominator
     except Exception:
         pass
-    return 30.0
+    return 24.0
 
+def cut_video(original_video: str, cut_video: str, start_frame: int, end_frame: int):
+    fps = detect_fps(original_video)
+    start_time = start_frame / fps
+    num_frames = end_frame - start_frame
+
+    run_ffmpeg(['-ss',  str(start_time), '-i', original_video, '-c:v', roop.globals.video_encoder, '-c:a', 'aac', '-frames:v', str(num_frames), cut_video])
+
+def join_videos(videos: List[str], dest_filename: str):
+    inputs = []
+    filter = ''
+    for i,v in enumerate(videos):
+        inputs.append('-i')
+        inputs.append(v)
+        filter += f'[{i}:v:0][{i}:a:0]'
+    run_ffmpeg([" ".join(inputs), '-filter_complex', f'"{filter}concat=n={len(videos)}:v=1:a=1[outv][outa]"', '-map', '"[outv]"', '-map', '"[outa]"', dest_filename])    
 
 def extract_frames(target_path: str) -> None:
+    create_temp(target_path)
     temp_directory_path = get_temp_directory_path(target_path)
-    run_ffmpeg(['-i', target_path, '-pix_fmt', 'rgb24', os.path.join(temp_directory_path, '%04d.png')])
+    run_ffmpeg(['-i', target_path, '-q:v', '1', '-pix_fmt', 'rgb24', os.path.join(temp_directory_path, f'%04d.{roop.globals.CFG.output_image_format}')])
+    return temp_directory_path
 
 
-def create_video(target_path: str, fps: float = 30.0) -> None:
-    temp_output_path = get_temp_output_path(target_path)
+def create_video(target_path: str, dest_filename: str, fps: float = 24.0) -> None:
     temp_directory_path = get_temp_directory_path(target_path)
-    run_ffmpeg(['-r', str(fps), '-i', os.path.join(temp_directory_path, '%04d.png'), '-c:v', roop.globals.video_encoder, '-crf', str(roop.globals.video_quality), '-pix_fmt', 'yuv420p', '-vf', 'colorspace=bt709:iall=bt601-6-625:fast=1', '-y', temp_output_path])
-    # ffmpeg -hide_banner -hwaccel auto -loglevel error -r 30.0 -i G:/delme\\temp\\te1533...0\\%04d.png -c:v libx264 -crf 18
+    run_ffmpeg(['-r', str(fps), '-i', os.path.join(temp_directory_path, f'%04d.{roop.globals.CFG.output_image_format}'), '-c:v', roop.globals.video_encoder, '-crf', str(roop.globals.video_quality), '-pix_fmt', 'yuv420p', '-vf', 'colorspace=bt709:iall=bt601-6-625:fast=1', '-y', dest_filename])
+    return dest_filename
 
 
-def restore_audio(target_path: str, output_path: str) -> None:
-    temp_output_path = get_temp_output_path(target_path)
-    done = run_ffmpeg(['-i', temp_output_path, '-i', target_path, '-c:v', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-y', output_path])
-    if not done:
-        move_temp(target_path, output_path)
+def create_gif_from_video(video_path: str, gif_path):
+    from roop.capturer import get_video_frame
+
+    fps = detect_fps(video_path)
+    frame = get_video_frame(video_path)
+
+    run_ffmpeg(['-i', video_path, '-vf', f'fps={fps},scale={frame.shape[0]}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse', '-loop', '0', gif_path])
+
+
+def restore_audio(intermediate_video: str, original_video: str, final_video: str) -> None:
+    run_ffmpeg(['-i', intermediate_video, '-i', original_video, '-c:v', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-y', final_video])
 
 
 def get_temp_frame_paths(target_path: str) -> List[str]:
     temp_directory_path = get_temp_directory_path(target_path)
-    return glob.glob((os.path.join(glob.escape(temp_directory_path), '*.png')))
+    return glob.glob((os.path.join(glob.escape(temp_directory_path), f'*.{roop.globals.CFG.output_image_format}')))
 
 
 def get_temp_directory_path(target_path: str) -> str:
@@ -90,8 +116,12 @@ def normalize_output_path(source_path: str, target_path: str, output_path: str) 
 
 
 def get_destfilename_from_path(srcfilepath: str, destfilepath: str, extension: str) -> str:
-    fn = os.path.splitext(os.path.basename(srcfilepath))[0]
-    return os.path.join(destfilepath, f'{fn}{extension}')
+    fn, ext = os.path.splitext(os.path.basename(srcfilepath))
+    if '.' in extension:
+        return os.path.join(destfilepath, f'{fn}{extension}')
+    return os.path.join(destfilepath, f'{fn}{extension}{ext}')
+
+
 
 
 def create_temp(target_path: str) -> None:
@@ -114,6 +144,12 @@ def clean_temp(target_path: str) -> None:
         shutil.rmtree(temp_directory_path)
     if os.path.exists(parent_directory_path) and not os.listdir(parent_directory_path):
         os.rmdir(parent_directory_path)
+
+def delete_temp_frames(filename: str) -> None:
+    dir = os.path.dirname(os.path.dirname(filename))
+    shutil.rmtree(dir)
+ 
+
 
 
 def has_image_extension(image_path: str) -> bool:
@@ -182,7 +218,49 @@ def open_with_default_app(filename):
     elif platform == 'wsl':
         subprocess.call('cmd.exe /C start'.split() + [filename])
     else:                                   # linux variants
-        subprocess.call(('xdg-open', filename))
+        subprocess.call('xdg-open', filename)
+
+def prepare_for_batch(target_files):
+    print("Preparing temp files")
+    tempfolder = os.path.join(tempfile.gettempdir(), "rooptmp")
+    if os.path.exists(tempfolder):
+        shutil.rmtree(tempfolder)
+    Path(tempfolder).mkdir(parents=True, exist_ok=True)
+    for f in target_files:
+        newname = os.path.basename(f.name)
+        shutil.move(f.name, os.path.join(tempfolder, newname))
+    return tempfolder
+
+
+def open_folder(path:str):
+    platform = get_platform()
+    try:
+        if platform == 'darwin':
+            subprocess.call(('open', path))
+        elif platform in ['win64', 'win32']:
+            open_with_default_app(path)
+        elif platform == 'wsl':
+            subprocess.call('cmd.exe /C start'.split() + [path])
+        else:                                   # linux variants
+            subprocess.call('xdg-open', path)
+    except Exception as e:
+        print(e)
+        pass
+        #import webbrowser
+        #webbrowser.open(url)
+
+    
+
+def create_version_html():
+    python_version = ".".join([str(x) for x in sys.version_info[0:3]])
+    versions_html = f"""
+python: <span title="{sys.version}">{python_version}</span>
+•
+torch: {getattr(torch, '__long_version__',torch.__version__)}
+•
+gradio: {gradio.__version__}
+"""
+    return versions_html
 
 
 def compute_cosine_distance(emb1, emb2):

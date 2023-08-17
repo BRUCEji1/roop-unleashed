@@ -6,3 +6,8 @@ __pycache__
 *.pth
 /start.bat
 /env
+.vscode
+output
+temp
+config.yaml
+run.bat

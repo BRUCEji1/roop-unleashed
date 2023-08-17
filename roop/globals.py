@@ -1,3 +1,4 @@
+from settings import Settings
 from typing import List
 
 source_path = None
@@ -22,7 +23,20 @@ execution_threads = None
 headless = None
 log_level = 'error'
 selected_enhancer = None
+face_swap_mode = None
+blend_ratio = 0.5
+distance_threshold = 0.65
+default_det_size = True
+
 FACE_ENHANCER = None
 
-SELECTED_FACE_DATA_INPUT = None
-SELECTED_FACE_DATA_OUTPUT = None
+INPUT_FACES = []
+TARGET_FACES = []
+
+IMAGE_CHAIN_PROCESSOR = None
+VIDEO_CHAIN_PROCESSOR = None
+BATCH_IMAGE_CHAIN_PROCESSOR = None
+
+CFG: Settings = None
+
+
